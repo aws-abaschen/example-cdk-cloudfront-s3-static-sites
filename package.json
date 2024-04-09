@@ -1,0 +1,28 @@
+{
+  "name": "example-cdk-cloudfront-s3-static-sites",
+  "version": "0.1.0",
+  "bin": {
+    "example-cdk-cloudfront-s3-static-sites": "bin/cloudfront-s3-static-sites.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "20.11.30",
+    "aws-cdk": "2.136.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.4.3"
+  },
+  "dependencies": {
+    "@aws-solutions-constructs/aws-cloudfront-s3": "^2.54.1",
+    "aws-cdk-lib": "2.136.0",
+    "constructs": "^10.0.0",
+    "source-map-support": "^0.5.21"
+  }
+}

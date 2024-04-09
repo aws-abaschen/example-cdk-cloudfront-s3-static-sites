@@ -1,0 +1,3 @@
+[submodule "example-static-website-s3"]
+	path = example-static-website-s3
+	url = git@github.com:aws-abaschen/example-static-website-s3.git
