@@ -37,19 +37,13 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
 
     new Site(this, {
       siteName: `VueJS-${this.deploymentEnv}`,
-      cacheBehaviors: [
+      origins:  
         {
-          '/assets/*': {
-            allowedMethods: cdk.aws_cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-            cachedMethods: cdk.aws_cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,
-            compress: true,
-            cachePolicy: cachePolicy_HostAcceptOrigin,
-            viewerProtocolPolicy: cdk.aws_cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          }
+          '/assets/videos/*': 'videos'
         }
-      ],
+      ,
       webAcl: props.common.webAcl,
-      originAccessIdentity: props.common.originAccessIdentity
+      originAccessControl: props.common.originAccessControl
 
     });
 
