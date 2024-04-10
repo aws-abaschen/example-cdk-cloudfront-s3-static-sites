@@ -1,64 +1,89 @@
 import * as cdk from 'aws-cdk-lib';
-import { CachePolicy, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { BehaviorOptions, CachePolicy, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
-import { Bucket, StorageClass } from 'aws-cdk-lib/aws-s3';
+import { Bucket, BucketProps, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { CloudfrontS3StaticSitesStack } from './cloudfront-s3-static-sites-stack';
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
+
+
+export interface OptionalBehaviorOptions extends Partial<cdk.aws_cloudfront.BehaviorOptions> {
+  origin?: S3Origin
+  cachePolicy?: CachePolicy
+  responsePolicy?: ResponseHeadersPolicy
+}
+
+export interface DistributionOrigin {
+  id: string
+  bucket: Bucket
+  behavior: BehaviorOptions
+};
+
+export interface OriginProps {
+  id: string
+  bucket?: Bucket
+  behavior?: OptionalBehaviorOptions
+}
+
 export interface SiteProps extends cdk.NestedStackProps {
-  siteName: string;
+  siteName: string | {
+    id: string
+    bucket?: Bucket
+    behavior?: OptionalBehaviorOptions
+  }
+  domain?: {
+    domainName: string,
+    altNames: string[],
+    certificateArn: string
+  },
   cloudFrontDistributionProps?: DistributionProps
-  origins: { [path: string]: string }
+  origins: {
+    [path: string]: string | OriginProps
+  }
 
   originAccessControl: CfnOriginAccessControl
   webAcl?: cdk.aws_wafv2.CfnWebACL;
 
 }
+
+const contentBucketProps: Partial<BucketProps> = {
+  removalPolicy: cdk.RemovalPolicy.DESTROY,
+  autoDeleteObjects: true,
+  versioned: true,
+  lifecycleRules: [{
+    noncurrentVersionTransitions: [{
+      storageClass: StorageClass.GLACIER,
+      transitionAfter: cdk.Duration.days(90)
+    }]
+  }]
+}
+
 export class Site extends cdk.NestedStack {
   readonly siteName: string;
   readonly webAcl?: cdk.aws_wafv2.CfnWebACL;
 
   constructor(scope: CloudfrontS3StaticSitesStack, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
-
-    const contentBucketProps = {
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      versioned: true,
-      lifecycleRules: [{
-        noncurrentVersionTransitions: [{
-          storageClass: StorageClass.GLACIER,
-          transitionAfter: cdk.Duration.days(90)
-        }]
-      }]
+    
+    if (typeof props.siteName === 'string') {
+      this.siteName = props.siteName;
+    } else {
+      this.siteName = props.siteName.id;
     }
-    this.siteName = props.siteName;
-    const origins: { [path: string]: string } = props.origins
-    const distributionOrigins: { [path: string]: { bucketName: string, bucket: Bucket, origin: S3Origin } } = {};
-    const defaultWebContentBucket = new Bucket(this, this.name(`webContent-default-Bucket`), {
-      ...contentBucketProps,
-      bucketName: this.regionName(`webContent-default`),
-    });
-    const defaultWebContentOrigin = new S3Origin(defaultWebContentBucket, {
-      originAccessIdentity: undefined
-    });
+    const defaultBehaviorProps : OriginProps= {id: 'default'};
+
+    const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
+    const additionalBehaviors: { [path: string]: cdk.aws_cloudfront.BehaviorOptions } = {};
+    const defaultOrigin = this._createBehavior(defaultBehaviorProps, true);
 
     // for each origin in props.origins, create bucket and S3Origin
-    for (const [path, siteName] of Object.entries(origins)) {
-      const webContentBucket = new Bucket(this, this.name(`webContent-${siteName}-Bucket`), {
-        ...contentBucketProps,
-        bucketName: this.regionName(`webContent-${siteName}`),
-      });
-      const webContentOrigin = new S3Origin(webContentBucket, {
-        originAccessIdentity: undefined
-      });
-      distributionOrigins[path] = {
-        bucketName: siteName,
-        bucket: webContentBucket,
-        origin: webContentOrigin
-      };
+    for (const [path, siteName] of Object.entries(props.origins)) {
+      const output = this._createBehavior(siteName);
+      distributionOriginsOutput[path] = output
+      additionalBehaviors[path] = {
+        ...output.behavior
+      }
     }
-
 
     const accessLog = new Bucket(this, this.name(`accessLog`), {
       bucketName: this.regionName('accessLog-Bucket'),
@@ -73,46 +98,11 @@ export class Site extends cdk.NestedStack {
     })
 
 
-
-
-    const responseHeadersPolicy = new ResponseHeadersPolicy(this, this.name('ResponseHeadersPolicy'), {
-      responseHeadersPolicyName: this.name('ResponseHeadersPolicy'),
-      comment: 'A policy for ' + this.name('ResponseHeadersPolicy'),
-      /*corsBehavior: {
-        accessControlAllowCredentials: false,
-        accessControlAllowHeaders: ['X-Custom-Header-1', 'X-Custom-Header-2'],
-        accessControlAllowMethods: ['GET', 'POST'],
-        accessControlAllowOrigins: ['*'],
-        //accessControlExposeHeaders: ['X-Custom-Header-1', 'X-Custom-Header-2'],
-        accessControlMaxAge: cdk.Duration.seconds(600),
-        originOverride: true,
-      },*/
-      /*customHeadersBehavior: {
-        customHeaders: [
-          { header: 'X-Amz-Date', value: 'some-value', override: true },
-          { header: 'X-Amz-Security-Token', value: 'some-value', override: false },
-        ],
-      },*/
-      securityHeadersBehavior: {
-        contentSecurityPolicy: { contentSecurityPolicy: "default-src https:; default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data; style-src 'self'; frame-ancestors 'self'; form-action 'self';", override: true },
-        contentTypeOptions: { override: true },
-        frameOptions: { frameOption: HeadersFrameOption.DENY, override: true },
-        referrerPolicy: { referrerPolicy: HeadersReferrerPolicy.NO_REFERRER, override: true },
-        strictTransportSecurity: { accessControlMaxAge: cdk.Duration.seconds(600), includeSubdomains: true, override: true },
-        xssProtection: { protection: true, modeBlock: true, override: true },
-      },
-      removeHeaders: ['Server'],
-      serverTimingSamplingRate: 50,
-    });
-
     const distribution = new Distribution(this, this.name('CloudFront'), {
-      defaultBehavior: {
-        origin: defaultWebContentOrigin,
-        cachePolicy: CachePolicy.CACHING_OPTIMIZED,
-        responseHeadersPolicy: responseHeadersPolicy,
-        viewerProtocolPolicy: cdk.aws_cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      defaultBehavior: defaultOrigin.behavior,
+      additionalBehaviors: {
+        ...additionalBehaviors,
       },
-      additionalBehaviors: distributionOrigins,
       defaultRootObject: 'index.html',
       enableIpv6: true,
       enabled: true,
@@ -123,20 +113,21 @@ export class Site extends cdk.NestedStack {
       priceClass: cdk.aws_cloudfront.PriceClass.PRICE_CLASS_100,
       ...props.cloudFrontDistributionProps,
     });
+
+    // Remove the old OriginAccessIdentity
     const originAccessControlAttr = props.originAccessControl.getAtt('Id');
     const cfnDistribution = distribution.node.defaultChild as CfnDistribution
     cfnDistribution.addOverride('Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity', "")
     cfnDistribution.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', originAccessControlAttr)
-    const s3OriginNode = distribution.node.findAll().filter((child) => child.node.id === 'S3Origin');
-    s3OriginNode[0].node.tryRemoveChild('S3OriginConfig');
+    distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(c => c.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
 
     // for each webcontentBuckets add policy for cloudfront access
-    for (const [path, { bucket, bucketName }] of Object.entries(distributionOrigins)) {
-      let i=1;
+    for (const [path, { bucket, id }] of Object.entries(distributionOriginsOutput)) {
+      let i = 1;
       const cfnDistribution = distribution.node.defaultChild as CfnDistribution
       cfnDistribution.addOverride(`Properties.DistributionConfig.Origins.${i}.S3OriginConfig.OriginAccessIdentity`, "")
       cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.${i}.OriginAccessControlId`, originAccessControlAttr)
-      
+
       distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(construct => construct.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
       bucket.addToResourcePolicy(new PolicyStatement({
         effect: Effect.ALLOW,
@@ -149,17 +140,17 @@ export class Site extends cdk.NestedStack {
           }
         }
       }));
-      new cdk.CfnOutput(this, this.name(`${bucketName}-Output`), {
+      new cdk.CfnOutput(this, this.name(`${id}-Output`), {
         value: bucket.bucketArn,
-        description: `${this.name(`${bucketName}-arn`)} Site bucket`,
-        exportName: this.name(`${bucketName}-arn`)
+        description: `${this.name(`${id}-arn`)} Site bucket`,
+        exportName: this.name(`${id}-arn`)
       })
     }
-    defaultWebContentBucket.addToResourcePolicy(new PolicyStatement({
+    defaultOrigin.bucket.addToResourcePolicy(new PolicyStatement({
       effect: Effect.ALLOW,
       actions: ['s3:GetObject'],
       principals: [new ServicePrincipal('cloudfront.amazonaws.com')],
-      resources: [defaultWebContentBucket.arnForObjects('*')],
+      resources: [defaultOrigin.bucket.arnForObjects('*')],
       conditions: {
         StringEquals: {
           'AWS:SourceArn': `arn:aws:cloudfront::${scope.account}:distribution/${distribution.distributionId}`
@@ -180,10 +171,33 @@ export class Site extends cdk.NestedStack {
       exportName: this.name('LoggingBucket')
     });
     new cdk.CfnOutput(this, this.name('SiteBucket-Output'), {
-      value: defaultWebContentBucket.bucketArn,
+      value: defaultOrigin.bucket.bucketArn,
       description: `${this.name(`default`)} Site bucket`,
       exportName: this.name(`default-arn`)
     })
+  }
+  _createBehavior(param: string | OriginProps, skipId?: boolean): DistributionOrigin {
+    const originProps = typeof param === 'string' ? { id: param } : { ...param };
+
+    const webContentBucket = originProps.bucket ?? new Bucket(this, this.name(`webContent-${skipId ? 'default' : originProps.id}-Bucket`), {
+      ...contentBucketProps,
+      bucketName: skipId ? this.regionName(`webContent}`) : this.regionName(`webContent-${originProps.id}`),
+    });
+    const webContentOrigin = originProps.bucket && originProps.behavior?.origin ? originProps.behavior.origin : new S3Origin(webContentBucket, {
+      originAccessIdentity: undefined
+    });
+    const cachePolicy = originProps.behavior?.cachePolicy ?? CachePolicy.CACHING_OPTIMIZED;
+    const responseHeadersPolicy = originProps.behavior?.responsePolicy ?? ResponseHeadersPolicy.SECURITY_HEADERS;
+    return {
+      id: originProps.id,
+      bucket: webContentBucket,
+      behavior: {
+        ...originProps.behavior,
+        cachePolicy,
+        responseHeadersPolicy,
+        origin: webContentOrigin,
+      }
+    };
   }
 
   name(resourceName: string) {

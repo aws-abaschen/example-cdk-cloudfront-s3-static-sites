@@ -2,7 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Site } from './Site';
 import { CommonStack } from './CommonResources';
-import { CachePolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { CachePolicy, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 
 export interface CloudfrontS3StaticSitesStackProps extends cdk.StackProps {
@@ -33,6 +33,36 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
         headers: ["Host", "Accept", "Origin"],
         behavior: 'whitelist'
       }
+    });
+    
+    const responseHeadersPolicy = new ResponseHeadersPolicy(this, 'ResponseHeadersPolicy', {
+      responseHeadersPolicyName: 'StrictResponseHeadersPolicy',
+      comment: 'A policy for strict response headers',
+      /*corsBehavior: {
+        accessControlAllowCredentials: false,
+        accessControlAllowHeaders: ['X-Custom-Header-1', 'X-Custom-Header-2'],
+        accessControlAllowMethods: ['GET', 'POST'],
+        accessControlAllowOrigins: ['*'],
+        //accessControlExposeHeaders: ['X-Custom-Header-1', 'X-Custom-Header-2'],
+        accessControlMaxAge: cdk.Duration.seconds(600),
+        originOverride: true,
+      },*/
+      /*customHeadersBehavior: {
+        customHeaders: [
+          { header: 'X-Amz-Date', value: 'some-value', override: true },
+          { header: 'X-Amz-Security-Token', value: 'some-value', override: false },
+        ],
+      },*/
+      securityHeadersBehavior: {
+        contentSecurityPolicy: { contentSecurityPolicy: "default-src https:; default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data; style-src 'self'; frame-ancestors 'self'; form-action 'self';", override: true },
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: HeadersFrameOption.DENY, override: true },
+        referrerPolicy: { referrerPolicy: HeadersReferrerPolicy.NO_REFERRER, override: true },
+        strictTransportSecurity: { accessControlMaxAge: cdk.Duration.seconds(600), includeSubdomains: true, override: true },
+        xssProtection: { protection: true, modeBlock: true, override: true },
+      },
+      removeHeaders: ['Server'],
+      serverTimingSamplingRate: 50,
     });
 
     new Site(this, {
