@@ -4,8 +4,6 @@ import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { Bucket, BucketProps, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { CloudfrontS3StaticSitesStack } from './cloudfront-s3-static-sites-stack';
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
-
 
 export interface OptionalBehaviorOptions extends Partial<cdk.aws_cloudfront.BehaviorOptions> {
   origin?: S3Origin
@@ -36,13 +34,14 @@ export interface SiteProps extends cdk.NestedStackProps {
     altNames: string[],
     certificateArn: string
   },
+  accessLogsBucketArn: string,
   cloudFrontDistributionProps?: DistributionProps
   origins: {
     [path: string]: string | OriginProps
   }
 
-  originAccessControl: CfnOriginAccessControl
-  webAcl?: cdk.aws_wafv2.CfnWebACL;
+  originAccessControlId: string
+  webAclArn?: string;
 
 }
 
@@ -60,22 +59,21 @@ const contentBucketProps: Partial<BucketProps> = {
 
 export class Site extends cdk.NestedStack {
   readonly siteName: string;
-  readonly webAcl?: cdk.aws_wafv2.CfnWebACL;
 
   constructor(scope: CloudfrontS3StaticSitesStack, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
-    
+
     if (typeof props.siteName === 'string') {
       this.siteName = props.siteName;
     } else {
       this.siteName = props.siteName.id;
     }
-    const defaultBehaviorProps : OriginProps= {id: 'default'};
+    const defaultBehaviorProps: OriginProps = { id: 'default' };
 
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
     const additionalBehaviors: { [path: string]: cdk.aws_cloudfront.BehaviorOptions } = {};
     const defaultOrigin = this._createBehavior(defaultBehaviorProps, true);
-
+    const accessLogBucket = Bucket.fromBucketArn(this, this.name('accessLog'), props.accessLogsBucketArn);
     // for each origin in props.origins, create bucket and S3Origin
     for (const [path, siteName] of Object.entries(props.origins)) {
       const output = this._createBehavior(siteName);
@@ -84,19 +82,6 @@ export class Site extends cdk.NestedStack {
         ...output.behavior
       }
     }
-
-    const accessLog = new Bucket(this, this.name(`accessLog`), {
-      bucketName: this.regionName('accessLog-Bucket'),
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      accessControl: cdk.aws_s3.BucketAccessControl.LOG_DELIVERY_WRITE,
-      lifecycleRules: [{
-        enabled: true,
-        expiration: cdk.Duration.days(90),
-        id: 'rule',
-      }]
-    })
-
 
     const distribution = new Distribution(this, this.name('CloudFront'), {
       defaultBehavior: defaultOrigin.behavior,
@@ -107,18 +92,17 @@ export class Site extends cdk.NestedStack {
       enableIpv6: true,
       enabled: true,
       enableLogging: true,
-      logBucket: accessLog,
+      logBucket: accessLogBucket,
       logFilePrefix: `accessLog/${this.siteName}`,
-      webAclId: this.webAcl?.attrArn,
+      webAclId: props.webAclArn,
       priceClass: cdk.aws_cloudfront.PriceClass.PRICE_CLASS_100,
       ...props.cloudFrontDistributionProps,
     });
 
     // Remove the old OriginAccessIdentity
-    const originAccessControlAttr = props.originAccessControl.getAtt('Id');
     const cfnDistribution = distribution.node.defaultChild as CfnDistribution
     cfnDistribution.addOverride('Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity', "")
-    cfnDistribution.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', originAccessControlAttr)
+    cfnDistribution.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', props.originAccessControlId)
     distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(c => c.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
 
     // for each webcontentBuckets add policy for cloudfront access
@@ -126,7 +110,7 @@ export class Site extends cdk.NestedStack {
       let i = 1;
       const cfnDistribution = distribution.node.defaultChild as CfnDistribution
       cfnDistribution.addOverride(`Properties.DistributionConfig.Origins.${i}.S3OriginConfig.OriginAccessIdentity`, "")
-      cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.${i}.OriginAccessControlId`, originAccessControlAttr)
+      cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.${i}.OriginAccessControlId`, props.originAccessControlId)
 
       distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(construct => construct.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
       bucket.addToResourcePolicy(new PolicyStatement({
@@ -164,12 +148,6 @@ export class Site extends cdk.NestedStack {
       exportName: this.name('CloudFrontURL')
     })
 
-
-    new cdk.CfnOutput(this, this.name('LoggingBucket-Output'), {
-      value: accessLog.bucketArn,
-      description: `${this.siteName} Logging bucket`,
-      exportName: this.name('LoggingBucket')
-    });
     new cdk.CfnOutput(this, this.name('SiteBucket-Output'), {
       value: defaultOrigin.bucket.bucketArn,
       description: `${this.name(`default`)} Site bucket`,

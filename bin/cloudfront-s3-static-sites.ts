@@ -9,12 +9,16 @@ const common = new CommonStack(app, 'CommonResources', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 })
 new CloudfrontS3StaticSitesStack(app, 'GPCloudfrontMinisites', {
-    env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-    common,
-    project: 'un'
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+  accessLogsBucketArn: common.accessLog.bucketArn,
+  originAccessControlId: common.originAccessControl.attrId,
+  webAclArn: common.webAcl.attrArn,
+  project: 'un'
 });
 new CloudfrontS3StaticSitesStack(app, 'UNCloudfrontMinisites', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-  common,
+  accessLogsBucketArn: common.accessLog.bucketArn,
+  originAccessControlId: common.originAccessControl.attrId,
+  webAclArn: common.webAcl.attrArn,
   project: 'gp'
 });

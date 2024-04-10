@@ -2,13 +2,16 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Site } from './Site';
 import { CommonStack } from './CommonResources';
-import { CachePolicy, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { CachePolicy, CfnOriginAccessControl, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 
 export interface CloudfrontS3StaticSitesStackProps extends cdk.StackProps {
   deploymentEnv?: string;
-  common: CommonStack
   project: string
+  accessLogsBucketArn: string
+  webAclArn: string
+  originAccessControlId: string
+
 }
 
 export class CloudfrontS3StaticSitesStack extends cdk.Stack {
@@ -20,6 +23,8 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
     super(scope, id, props);
     this.project = props.project;
     this.deploymentEnv = props?.deploymentEnv ?? 'dev';
+
+    
 
     const cachePolicy_HostAcceptOrigin = new CachePolicy(this, 'HostAcceptOrigin-ForwardedCache', {
       cachePolicyName: 'HostAcceptOrigin-ForwardedCache',
@@ -72,8 +77,9 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
           '/assets/videos/*': 'videos'
         }
       ,
-      webAcl: props.common.webAcl,
-      originAccessControl: props.common.originAccessControl
+      accessLogsBucketArn: props.accessLogsBucketArn,
+      webAclArn: props.webAclArn,
+      originAccessControlId: props.originAccessControlId
 
     });
 
