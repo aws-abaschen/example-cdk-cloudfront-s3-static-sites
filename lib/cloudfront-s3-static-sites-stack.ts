@@ -79,7 +79,6 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
       ,
       accessLogsBucketArn: props.accessLogsBucketArn,
       webAclArn: props.webAclArn,
-      originAccessControlId: props.originAccessControlId
 
     });
 

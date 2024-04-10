@@ -14,18 +14,6 @@ export class CommonStack extends cdk.Stack {
     readonly accessLog: Bucket;
     constructor(scope: Construct, id: string, props: CommonStackProps) {
         super(scope, id, props);
-        this.originAccessControl = new CfnOriginAccessControl(this, 'S3AccessControl', {
-            originAccessControlConfig: {
-                name: 'S3AccessControl',
-                originAccessControlOriginType: 's3',
-                signingBehavior: 'always',
-                signingProtocol: 'sigv4',
-
-                // the properties below are optional
-                description: 'Allow cloudfront access to S3 buckets using Bucket Policies',
-            },
-        });
-
 
         this.accessLog = new Bucket(this, 'accessLog', {
             bucketName: `cloudfront-accessLog-${this.account}`,

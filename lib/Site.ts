@@ -1,11 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
-import { BehaviorOptions, CachePolicy, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { Certificate, CertificateValidation } from 'aws-cdk-lib/aws-certificatemanager';
+import { BehaviorOptions, CachePolicy, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
-import { Bucket, BucketProps, StorageClass } from 'aws-cdk-lib/aws-s3';
-import { CloudfrontS3StaticSitesStack } from './cloudfront-s3-static-sites-stack';
-import { Certificate, CertificateValidation } from 'aws-cdk-lib/aws-certificatemanager';
 import { HostedZone } from 'aws-cdk-lib/aws-route53';
+import { Bucket, BucketProps, StorageClass } from 'aws-cdk-lib/aws-s3';
+import { Construct } from 'constructs';
 
 export interface OptionalBehaviorOptions extends Partial<cdk.aws_cloudfront.BehaviorOptions> {
   origin?: S3Origin
@@ -45,7 +45,6 @@ export interface SiteProps extends cdk.NestedStackProps {
     [path: string]: string | OriginProps
   }
 
-  originAccessControlId: string
   webAclArn?: string;
 
 }
@@ -65,7 +64,7 @@ const contentBucketProps: Partial<BucketProps> = {
 export class Site extends cdk.NestedStack {
   readonly siteName: string;
 
-  constructor(scope: CloudfrontS3StaticSitesStack, props: SiteProps) {
+  constructor(scope: Construct, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
 
     if (typeof props.siteName === 'string') {
@@ -122,10 +121,22 @@ export class Site extends cdk.NestedStack {
       ...props.cloudFrontDistributionProps,
     });
 
+    const originAccessControl = new CfnOriginAccessControl(this, this.name('S3AccessControl'), {
+      originAccessControlConfig: {
+          name: 'S3AccessControl',
+          originAccessControlOriginType: 's3',
+          signingBehavior: 'always',
+          signingProtocol: 'sigv4',
+
+          // the properties below are optional
+          description: 'Allow cloudfront access to S3 buckets using Bucket Policies',
+      },
+  });
+
     // Remove the old OriginAccessIdentity
     const cfnDistribution = distribution.node.defaultChild as CfnDistribution
     cfnDistribution.addOverride('Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity', "")
-    cfnDistribution.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', props.originAccessControlId)
+    cfnDistribution.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', originAccessControl.getAtt('Id'))
     distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(c => c.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
 
     // for each webcontentBuckets add policy for cloudfront access
@@ -133,7 +144,7 @@ export class Site extends cdk.NestedStack {
       let i = 1;
       const cfnDistribution = distribution.node.defaultChild as CfnDistribution
       cfnDistribution.addOverride(`Properties.DistributionConfig.Origins.${i}.S3OriginConfig.OriginAccessIdentity`, "")
-      cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.${i}.OriginAccessControlId`, props.originAccessControlId)
+      cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.${i}.OriginAccessControlId`, originAccessControl.getAtt('Id'))
 
       distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(construct => construct.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
       bucket.addToResourcePolicy(new PolicyStatement({
@@ -143,7 +154,7 @@ export class Site extends cdk.NestedStack {
         resources: [bucket.arnForObjects('*')],
         conditions: {
           StringEquals: {
-            'AWS:SourceArn': `arn:aws:cloudfront::${scope.account}:distribution/${distribution.distributionId}`
+            'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`
           }
         }
       }));
@@ -160,7 +171,7 @@ export class Site extends cdk.NestedStack {
       resources: [defaultOrigin.bucket.arnForObjects('*')],
       conditions: {
         StringEquals: {
-          'AWS:SourceArn': `arn:aws:cloudfront::${scope.account}:distribution/${distribution.distributionId}`
+          'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`
         }
       }
     }));
