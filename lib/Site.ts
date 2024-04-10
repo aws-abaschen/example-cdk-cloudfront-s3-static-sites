@@ -4,6 +4,8 @@ import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { Bucket, BucketProps, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { CloudfrontS3StaticSitesStack } from './cloudfront-s3-static-sites-stack';
+import { Certificate, CertificateValidation } from 'aws-cdk-lib/aws-certificatemanager';
+import { HostedZone } from 'aws-cdk-lib/aws-route53';
 
 export interface OptionalBehaviorOptions extends Partial<cdk.aws_cloudfront.BehaviorOptions> {
   origin?: S3Origin
@@ -32,7 +34,10 @@ export interface SiteProps extends cdk.NestedStackProps {
   domain?: {
     domainName: string,
     altNames: string[],
-    certificateArn: string
+    // either provide a hostedZone ID to validate a certificate
+    hostedZoneId?: string,
+    // or a certificate ARN directly
+    certificateArn?: string
   },
   accessLogsBucketArn: string,
   cloudFrontDistributionProps?: DistributionProps
@@ -82,12 +87,30 @@ export class Site extends cdk.NestedStack {
         ...output.behavior
       }
     }
-
+    const distributionProps = { ...props.cloudFrontDistributionProps };
+    if (props.domain) {
+      distributionProps.domainNames = [props.domain.domainName, ...props.domain.altNames];
+      if (props.domain.hostedZoneId) {
+        const hostedZone = HostedZone.fromHostedZoneId(this, this.name('hostedZone'), props.domain.hostedZoneId)
+        distributionProps.certificate = new Certificate(this, this.name('certificate'), {
+          domainName: props.domain.domainName,
+          subjectAlternativeNames: [props.domain.domainName, ...props.domain.altNames],
+          validation: CertificateValidation.fromDns(hostedZone)
+        })
+      } else {
+        if (!props.domain.certificateArn) {
+          throw new Error('Either a hostedZoneId or a certificateArn must be provided in the domain definition')
+        }
+        distributionProps.certificate = Certificate.fromCertificateArn(this, this.name('certificate'), props.domain.certificateArn);
+      }
+    }
     const distribution = new Distribution(this, this.name('CloudFront'), {
       defaultBehavior: defaultOrigin.behavior,
       additionalBehaviors: {
         ...additionalBehaviors,
       },
+      domainNames: [],
+      certificate: distributionProps.certificate,
       defaultRootObject: 'index.html',
       enableIpv6: true,
       enabled: true,
