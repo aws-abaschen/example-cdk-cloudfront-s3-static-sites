@@ -190,7 +190,7 @@ export class Site extends cdk.NestedStack {
   _grantLogAccess(bucket: IBucket, prefix: string) {
     this.accessLogBucket.addToResourcePolicy(new PolicyStatement({
       actions: ['s3:PutObject'],
-      resources: [this.accessLogBucket.arnForObjects(`${prefix}/*`)],
+      resources: [this.accessLogBucket.arnForObjects(`${prefix}*`)],
       //s3 log service
       principals: [new cdk.aws_iam.ServicePrincipal('logging.s3.amazonaws.com')],
       conditions: {
