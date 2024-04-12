@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { CachePolicy, CfnOriginAccessControl, OriginAccessIdentity } from 'aws-cdk-lib/aws-cloudfront';
+import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
@@ -16,10 +17,9 @@ export class CommonStack extends cdk.Stack {
         super(scope, id, props);
 
         this.accessLog = new Bucket(this, 'accessLog', {
-            bucketName: `cloudfront-accessLog-${this.account}`,
+            bucketName: `cloudfront-accesslog-${this.account}`,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
-            accessControl: cdk.aws_s3.BucketAccessControl.LOG_DELIVERY_WRITE,
             objectOwnership: cdk.aws_s3.ObjectOwnership.OBJECT_WRITER,
             lifecycleRules: [{
                 enabled: true,
