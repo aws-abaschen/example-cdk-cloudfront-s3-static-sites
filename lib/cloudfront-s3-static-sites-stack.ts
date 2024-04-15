@@ -1,9 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Site } from './Site';
-import { CommonStack } from './CommonResources';
-import { CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnOriginAccessControl, HeadersFrameOption, HeadersReferrerPolicy, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
-import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 
 export interface CloudfrontS3StaticSitesStackProps extends cdk.StackProps {
   deploymentEnv?: string;

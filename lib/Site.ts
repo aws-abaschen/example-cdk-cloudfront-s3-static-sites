@@ -111,6 +111,7 @@ export class Site extends NestedStack {
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
     const additionalBehaviors: { [path: string]: BehaviorOptions } = {};
     const defaultOrigin = this._createBehavior(defaultBehaviorProps);
+    let pathPrefixes: string[] = [];
     // for each origin in props.origins, create bucket and S3Origin
     for (const [path, siteName] of Object.entries(props.origins)) {
       const output = this._createBehavior(siteName, path);
@@ -118,6 +119,8 @@ export class Site extends NestedStack {
       additionalBehaviors[path] = {
         ...output.behavior
       }
+      //only retrieve what's inside the /xxxxxx/ = xxxxxx
+      pathPrefixes.push(path.split('/')[1]);
     }
     const distributionProps = { ...props.cloudFrontDistributionProps };
     if (props.domain) {
@@ -135,6 +138,18 @@ export class Site extends NestedStack {
         }
         distributionProps.certificate = Certificate.fromCertificateArn(this, this.name('certificate'), props.domain.certificateArn);
       }
+    }
+
+    defaultOrigin.behavior = {
+      ...defaultOrigin.behavior,
+      functionAssociations: [{
+        function: new Function(this, this.name(`${defaultOrigin.id}-rewrite`), {
+          code: FunctionCode.fromInline(`function handler(event) { if(!event.request.uri.match(/^\\/(${pathPrefixes.join('|')})$/)) return event.request; return {statusCode: 301,headers: {location: {value: event.request.uri.replace(/^\\/(${pathPrefixes.join('|')})$/, "/$1/")}}}}`),
+          runtime: FunctionRuntime.JS_2_0,
+        }),
+        eventType: FunctionEventType.VIEWER_REQUEST,
+      },
+      ],
     }
 
     const distribution = new Distribution(this, this.name('CloudFront'), {
