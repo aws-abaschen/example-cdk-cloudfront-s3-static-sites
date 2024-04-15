@@ -5,11 +5,10 @@ import { CloudfrontS3StaticSitesStack } from '../lib/cloudfront-s3-static-sites-
 import { CommonStack } from '../lib/CommonResources';
 
 const app = new cdk.App();
-const common = new CommonStack(app, 'CommonResources', {
-  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-})
+// const common = new CommonStack(app, 'CommonResources', {
+//   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+// })
 new CloudfrontS3StaticSitesStack(app, 'Sites', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-  accessLogsBucketArn: common.accessLog.bucketArn,
   project: 'un'
 });

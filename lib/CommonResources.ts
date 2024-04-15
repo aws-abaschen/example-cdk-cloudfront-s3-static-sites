@@ -12,21 +12,9 @@ export interface CommonStackProps extends cdk.StackProps {
 export class CommonStack extends cdk.Stack {
     readonly webAcl: CfnWebACL;
     readonly originAccessControl: CfnOriginAccessControl;
-    readonly accessLog: Bucket;
     constructor(scope: Construct, id: string, props: CommonStackProps) {
         super(scope, id, props);
 
-        this.accessLog = new Bucket(this, 'accessLog', {
-            bucketName: `cloudfront-accesslog-${this.account}`,
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
-            autoDeleteObjects: true,
-            objectOwnership: cdk.aws_s3.ObjectOwnership.OBJECT_WRITER,
-            lifecycleRules: [{
-                enabled: true,
-                expiration: cdk.Duration.days(90),
-                id: 'rule',
-            }]
-        });
 
         this.webAcl = new CfnWebACL(this, `acl-1`, {
             defaultAction: { allow: {} },
