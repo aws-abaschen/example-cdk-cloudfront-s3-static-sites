@@ -23,7 +23,7 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
       siteName: `VueJS-${this.deploymentEnv}`,
       origins:
       {
-        '/sub-site/': 'subsite'
+        '/sub-site/*': 'subsite'
       },
       dev: this.deploymentEnv === 'dev'
     });
