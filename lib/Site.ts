@@ -97,10 +97,12 @@ export class Site extends cdk.NestedStack {
     this.accessLogBucket = new Bucket(this, this.name('accessLog'), {
       bucketName: this.regionName(`site-accesslog`),
       ...contentBucketProps(this.dev),
-      accessControl: BucketAccessControl.LOG_DELIVERY_WRITE,
-      objectOwnership: ObjectOwnership.OBJECT_WRITER,
     });
-
+    const accessLogParams = {
+      logBucket: this.accessLogBucket,
+      logFilePrefix: `accessLog/${this.siteName}`,
+    }
+    this._grantLogAccess(accessLogParams.logBucket, accessLogParams.logFilePrefix)
     const defaultBehaviorProps: OriginProps = { id: 'default' };
 
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
@@ -150,8 +152,7 @@ export class Site extends cdk.NestedStack {
       enableIpv6: true,
       enabled: true,
       enableLogging: true,
-      logBucket: this.accessLogBucket,
-      logFilePrefix: `accessLog/${this.siteName}`,
+      ...accessLogParams,
       //webAclId: props.webAclArn,
       priceClass: cdk.aws_cloudfront.PriceClass.PRICE_CLASS_100,
       ...distributionProps,
@@ -232,10 +233,9 @@ export class Site extends cdk.NestedStack {
     })
   }
   _grantLogAccess(bucket: IBucket, prefix: string) {
-    console.log(`allowing ${bucket.bucketArn} to write logs to ${this.accessLogBucket.arnForObjects(`${prefix}*`)}`)
     this.accessLogBucket.addToResourcePolicy(new PolicyStatement({
       actions: ['s3:PutObject'],
-      resources: [this.accessLogBucket.arnForObjects(`${prefix}*`)],
+      resources: [this.accessLogBucket.arnForObjects(ensureObjectPrefixWildcard(prefix))],
       //s3 log service
       principals: [new cdk.aws_iam.ServicePrincipal('logging.s3.amazonaws.com')],
       conditions: {
@@ -304,4 +304,16 @@ export class Site extends cdk.NestedStack {
   regionName(resourceName: string) {
     return `${this.name(resourceName)}-${this.account}`.toLocaleLowerCase();
   }
+}
+
+const ensureObjectPrefixWildcard = (prefix: string) => {
+  //if prefix does not end with /, add one
+  if (!prefix.endsWith('/')) {
+    prefix += '/'
+  }
+  //if prefix does not end with a wildcard, add one
+  if (!prefix.endsWith('*')) {
+    prefix += '*'
+  }
+  return prefix;
 }
