@@ -1,10 +1,10 @@
-import * as cdk from 'aws-cdk-lib';
+import { CfnOutput, Duration, NestedStack, NestedStackProps, RemovalPolicy } from 'aws-cdk-lib';
 import { Certificate, CertificateValidation } from 'aws-cdk-lib/aws-certificatemanager';
-import { BehaviorOptions, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, Function, FunctionCode, FunctionEventType, FunctionRuntime, ResponseHeadersPolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { BehaviorOptions, CacheHeaderBehavior, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, Function, FunctionCode, FunctionEventType, FunctionRuntime, ICachePolicy, OriginAccessIdentity, PriceClass, ResponseHeadersPolicy, ViewerProtocolPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { HostedZone } from 'aws-cdk-lib/aws-route53';
-import { Bucket, BucketAccessControl, BucketProps, CfnBucketPolicy, IBucket, ObjectOwnership, ReplaceKey, StorageClass } from 'aws-cdk-lib/aws-s3';
+import { Bucket, BucketProps, CfnBucketPolicy, IBucket, ObjectOwnership, ReplaceKey, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 
 export interface OptionalBehaviorOptions extends Partial<BehaviorOptions> {
@@ -22,27 +22,28 @@ export interface DistributionOrigin {
 export interface OriginProps {
   id: string
   bucket?: Bucket
-  behavior?: OptionalBehaviorOptions
+  behavior?: OptionalBehaviorOptions,
 }
 
 const contentBucketProps = (dev?: boolean): Partial<BucketProps> => ({
   ...(dev ? {
-    removalPolicy: cdk.RemovalPolicy.DESTROY,
+    removalPolicy: RemovalPolicy.DESTROY,
     autoDeleteObjects: true,
   } : {
     versioned: true,
     lifecycleRules: [{
       noncurrentVersionTransitions: [{
         storageClass: StorageClass.GLACIER,
-        transitionAfter: cdk.Duration.days(90)
+        transitionAfter: Duration.days(90)
       }]
     }]
   }),
 
 });
 
-export interface SiteProps extends cdk.NestedStackProps {
+export interface SiteProps extends NestedStackProps {
   dev?: boolean,
+  disableCache?: boolean,
   siteName: string | {
     id: string
     bucket?: Bucket
@@ -56,6 +57,8 @@ export interface SiteProps extends cdk.NestedStackProps {
     // or a certificate ARN directly
     certificateArn?: string
   },
+  originAccessControl?: boolean,
+  urlPrefix?: string,
   cloudFrontDistributionProps?: DistributionProps
   origins: {
     [path: string]: string | OriginProps
@@ -64,24 +67,15 @@ export interface SiteProps extends cdk.NestedStackProps {
 }
 
 
-const subcontentBucketProps: Partial<BucketProps> = {
-  websiteIndexDocument: 'index.html',
-  websiteErrorDocument: 'index.html',
-  websiteRoutingRules: [
-    {
-      condition: {
-        httpErrorCodeReturnedEquals: '403'
-      },
-      replaceKey: ReplaceKey.with("index.html")
-    }
-  ]
-}
-
-export class Site extends cdk.NestedStack {
+export class Site extends NestedStack {
   readonly siteName: string;
   readonly accessLogBucket: IBucket;
   // flag for development website to allow quick deletion of buckets
   readonly dev: boolean;
+  readonly originAccessIdentity: OriginAccessIdentity | undefined;
+  readonly originAccessControlId: string | undefined
+  readonly cachePolicy: ICachePolicy;
+  readonly urlPrefix?: string;
 
   constructor(scope: Construct, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
@@ -93,19 +87,51 @@ export class Site extends cdk.NestedStack {
     }
 
     this.dev = !!props.dev
-
+    this.cachePolicy = props.disableCache ? CachePolicy.CACHING_DISABLED : new CachePolicy(this, this.name('cachePolicy'), {
+      cachePolicyName: this.name('cachePolicy'),
+      defaultTtl: Duration.days(365),
+      maxTtl: Duration.days(365),
+      minTtl: Duration.days(365),
+      enableAcceptEncodingBrotli: true,
+      enableAcceptEncodingGzip: true,
+      headerBehavior: CacheHeaderBehavior.allowList('x-s3-origin')
+    });
     this.accessLogBucket = new Bucket(this, this.name('accessLog'), {
       bucketName: this.regionName(`site-accesslog`),
       ...contentBucketProps(this.dev),
-      accessControl: BucketAccessControl.LOG_DELIVERY_WRITE,
       objectOwnership: ObjectOwnership.OBJECT_WRITER,
     });
+    const accessLogParams = {
+      logBucket: this.accessLogBucket,
+      logFilePrefix: `accessLog/${this.siteName}`,
+    }
+    this._grantLogAccess(accessLogParams.logBucket, accessLogParams.logFilePrefix);
+    if (props.originAccessControl) {
+      const originAccessControl = new CfnOriginAccessControl(this, this.name('S3AccessControl'), {
+        originAccessControlConfig: {
+          name: this.name('S3AccessControl'),
+          originAccessControlOriginType: 's3',
+          signingBehavior: 'always',
+          signingProtocol: 'sigv4',
 
+          // the properties below are optional
+          description: 'Allow cloudfront access to S3 buckets using Bucket Policies',
+        },
+      });
+      this.originAccessControlId = originAccessControl.attrId;
+      this.originAccessIdentity = undefined
+    } else {
+      this.originAccessIdentity = new OriginAccessIdentity(this, this.name('OAI'), {
+        comment: this.siteName
+
+      })
+    }
     const defaultBehaviorProps: OriginProps = { id: 'default' };
 
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
     const additionalBehaviors: { [path: string]: BehaviorOptions } = {};
     const defaultOrigin = this._createBehavior(defaultBehaviorProps);
+    let pathPrefixes: string[] = [];
     // for each origin in props.origins, create bucket and S3Origin
     for (const [path, siteName] of Object.entries(props.origins)) {
       const output = this._createBehavior(siteName, path);
@@ -113,6 +139,8 @@ export class Site extends cdk.NestedStack {
       additionalBehaviors[path] = {
         ...output.behavior
       }
+      //only retrieve what's inside the /xxxxxx/ = xxxxxx
+      pathPrefixes.push(path.split('/')[1]);
     }
     const distributionProps = { ...props.cloudFrontDistributionProps };
     if (props.domain) {
@@ -131,6 +159,42 @@ export class Site extends cdk.NestedStack {
         distributionProps.certificate = Certificate.fromCertificateArn(this, this.name('certificate'), props.domain.certificateArn);
       }
     }
+    if (pathPrefixes.length > 0 || this.urlPrefix)
+      defaultOrigin.behavior = {
+        ...defaultOrigin.behavior,
+        functionAssociations: [{
+          function: new Function(this, this.name(`${defaultOrigin.id}-rewrite`), {
+            code:
+              this.urlPrefix ?
+                FunctionCode.fromInline(`function handler(event) {
+              let startsWithCorrectPrefix = /^\\/${this.urlPrefix}\\/(.*)/
+              if(!event.request.uri.match(startsWithCorrectPrefix)){
+                  return {statusCode: 301,headers: {location: {value: event.request.uri.replace(/^\\/(.*)/, "/${this.urlPrefix}/$1")}}};
+              }
+              let subsites = "${pathPrefixes.join('|')}";
+              if(subsites !==''){
+              let subsiteWithoutTrailingSlash = new RegExp("^\\/${this.urlPrefix}\\/("+subsites+")$");
+              if(event.request.uri.match(subsiteWithoutTrailingSlash)){
+                  return {statusCode: 301,headers: {location: {value: event.request.uri.replace(subsiteWithoutTrailingSlash, "/${this.urlPrefix}/$1/")}}};
+              }
+              }
+              return event.request;
+          }`) : FunctionCode.fromInline(`function handler(event) {
+            let subsites = "${pathPrefixes.join('|')}";
+            if(subsites !==''){
+            let subsiteWithoutTrailingSlash = new RegExp("^\\/("+subsites+")$");
+            if(event.request.uri.match(subsiteWithoutTrailingSlash)){
+                return {statusCode: 301,headers: {location: {value: event.request.uri.replace(subsiteWithoutTrailingSlash, "/$1/")}}};
+            }
+            }
+            return event.request;
+        }`),
+            runtime: FunctionRuntime.JS_2_0,
+          }),
+          eventType: FunctionEventType.VIEWER_REQUEST,
+        },
+        ],
+      }
 
     const distribution = new Distribution(this, this.name('CloudFront'), {
       defaultBehavior: defaultOrigin.behavior,
@@ -139,10 +203,17 @@ export class Site extends cdk.NestedStack {
       },
       errorResponses: [
         {
+          httpStatus: 404,
+          responseHttpStatus: 200,
+          responsePagePath: `/${this.urlPrefix +'/' || '' }index.html`,
+          ttl: Duration.minutes(1),
+          //responseHeadersPolicy: ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS,
+        },
+        {
           httpStatus: 403,
           responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: cdk.Duration.minutes(1),
+          responsePagePath: `/${this.urlPrefix +'/' || '' }index.html`,
+          ttl: Duration.minutes(1),
           //responseHeadersPolicy: ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS,
         }
       ],
@@ -150,52 +221,49 @@ export class Site extends cdk.NestedStack {
       enableIpv6: true,
       enabled: true,
       enableLogging: true,
-      logBucket: this.accessLogBucket,
-      logFilePrefix: `accessLog/${this.siteName}`,
+      ...accessLogParams,
       //webAclId: props.webAclArn,
-      priceClass: cdk.aws_cloudfront.PriceClass.PRICE_CLASS_100,
+      priceClass: PriceClass.PRICE_CLASS_100,
       ...distributionProps,
     });
 
-    const originAccessControl = new CfnOriginAccessControl(this, this.name('S3AccessControl'), {
-      originAccessControlConfig: {
-        name: this.name('S3AccessControl'),
-        originAccessControlOriginType: 's3',
-        signingBehavior: 'always',
-        signingProtocol: 'sigv4',
-
-        // the properties below are optional
-        description: 'Allow cloudfront access to S3 buckets using Bucket Policies',
-      },
-    });
+    if (this.originAccessControlId) {
+      const cfnDistribution = distribution.node.defaultChild as CfnDistribution
+      cfnDistribution.addOverride(`Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity`, "")
+      //cfnDistribution.addDeletionOverride(`Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity`)
+      cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.0.OriginAccessControlId`, this.originAccessControlId)
 
 
-    // for each webcontentBuckets add policy for cloudfront access
-    for (const [path, { bucket, id }] of Object.entries(distributionOriginsOutput)) {
-      bucket.addToResourcePolicy(new PolicyStatement({
-        effect: Effect.ALLOW,
-        actions: ['s3:GetObject'],
-        principals: [new ServicePrincipal('cloudfront.amazonaws.com')],
-        resources: [bucket.arnForObjects('*')],
-        conditions: {
-          StringEquals: {
-            'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`
+      let i = 1;
+      // for each webcontentBuckets add policy for cloudfront access
+      for (const [path, { bucket, id }] of Object.entries(distributionOriginsOutput)) {
+
+        bucket.addToResourcePolicy(new PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ['s3:GetObject'],
+          principals: [new ServicePrincipal('cloudfront.amazonaws.com')],
+          resources: [bucket.arnForObjects('*')],
+          conditions: {
+            StringEquals: {
+              'AWS:SourceArn': `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`
+            }
           }
+        }));
+        //we are just using the index, might not be the same order
+        cfnDistribution.addOverride(`Properties.DistributionConfig.Origins.${i}.S3OriginConfig.OriginAccessIdentity`, "");
+        cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.${i}.OriginAccessControlId`, this.originAccessControlId);
+        i++;
+      }
+
+      //cleanup extra resources created by CF OAI
+      this.node.children.forEach(resource => {
+        //remove resource if instance of CfnCloudFrontOriginAccessIdentity
+        if (resource instanceof CfnCloudFrontOriginAccessIdentity) {
+          this.node.tryRemoveChild(resource.node.id)
         }
-      }));
-      new cdk.CfnOutput(this, this.name(`${id}-Output`), {
-        value: bucket.bucketArn,
-        description: `${this.name(`${id}-arn`)} Site bucket`,
-        exportName: this.name(`${id}-arn`)
       })
     }
 
-    const cfnDistribution = distribution.node.defaultChild as CfnDistribution
-    cfnDistribution.addOverride(`Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity`, "")
-    //cfnDistribution.addDeletionOverride(`Properties.DistributionConfig.Origins.0.S3OriginConfig.OriginAccessIdentity`)
-    cfnDistribution.addPropertyOverride(`DistributionConfig.Origins.0.OriginAccessControlId`, originAccessControl.attrId)
-
-    //distribution.node.findAll().filter((child) => child.node.id === 'S3Origin').map(construct => construct.node).forEach(node => node.tryRemoveChild('S3OriginConfig'));
     defaultOrigin.bucket.addToResourcePolicy(new PolicyStatement({
       effect: Effect.ALLOW,
       actions: ['s3:GetObject'],
@@ -208,36 +276,19 @@ export class Site extends cdk.NestedStack {
       }
     }));
 
-    new cdk.CfnOutput(this, this.name('CloudFrontURL-Output'), {
+    new CfnOutput(this, this.name('CloudFrontURL-Output'), {
       value: distribution.domainName,
       description: `${this.siteName} CloudFront URL`,
       exportName: this.name('CloudFrontURL')
     });
 
-    new cdk.CfnOutput(this, this.name('SiteBucket-Output'), {
-      value: defaultOrigin.bucket.bucketArn,
-      description: `${this.name(`default`)} Site bucket`,
-      exportName: this.name(`default-arn`)
-    });
-
-    //cleanup extra resources created by CF OAI
-    this.node.children.forEach(resource => {
-      //remove resource if instance of CfnCloudFrontOriginAccessIdentity
-      if (resource instanceof CfnCloudFrontOriginAccessIdentity) {
-        this.node.tryRemoveChild(resource.node.id)
-      }
-      if (resource instanceof CfnBucketPolicy) {
-        this.node.tryRemoveChild(resource.node.id)
-      }
-    })
   }
   _grantLogAccess(bucket: IBucket, prefix: string) {
-    console.log(`allowing ${bucket.bucketArn} to write logs to ${this.accessLogBucket.arnForObjects(`${prefix}*`)}`)
     this.accessLogBucket.addToResourcePolicy(new PolicyStatement({
       actions: ['s3:PutObject'],
-      resources: [this.accessLogBucket.arnForObjects(`${prefix}*`)],
+      resources: [this.accessLogBucket.arnForObjects(ensureObjectPrefixWildcard(prefix))],
       //s3 log service
-      principals: [new cdk.aws_iam.ServicePrincipal('logging.s3.amazonaws.com')],
+      principals: [new ServicePrincipal('logging.s3.amazonaws.com')],
       conditions: {
         ArnLike: {
           'aws:SourceArn': bucket.bucketArn
@@ -253,17 +304,30 @@ export class Site extends cdk.NestedStack {
 
     const webContentBucket = originProps.bucket ?? new Bucket(this, this.name(`webContent${isDefaultBehavior ? '' : '-' + originProps.id}-Bucket`), {
       ...contentBucketProps(this.dev),
-      //if !skipId then add subcontentBucketProps
-      ...(isDefaultBehavior ? {} : subcontentBucketProps),
+      //websiteIndexDocument: 'index.html',
+      //websiteErrorDocument: 'index.html',
       bucketName: isDefaultBehavior ? this.regionName(`webContent`) : this.regionName(`webContent-${originProps.id}`),
       serverAccessLogsBucket: this.accessLogBucket,
       serverAccessLogsPrefix
     });
+    new CfnOutput(this, this.name(`Bucket-${originProps.id}-Output`), {
+      value: webContentBucket.bucketArn,
+      description: `${this.name(`${originProps.id}-arn`)} Site bucket`,
+      exportName: this.name(`${originProps.id}-arn`)
+    });
     //this._grantLogAccess(webContentBucket, serverAccessLogsPrefix);
     const webContentOrigin = originProps.bucket && originProps.behavior?.origin ? originProps.behavior.origin : new S3Origin(webContentBucket, {
-      originAccessIdentity: undefined,
-      originId: this.name(`orig-${originProps.id}`)
+      ...(this.originAccessIdentity
+        ? {
+          originAccessIdentity: this.originAccessIdentity
+        }
+        : {
+          originAccessIdentity: undefined,
+          originId: this.name(`orig-${originProps.id}`)
+        })
     });
+    if (this.originAccessIdentity)
+      webContentBucket.grantRead(this.originAccessIdentity);
     if (path) {
 
       //add a function to remove path when forwarding to Origin
@@ -271,7 +335,7 @@ export class Site extends cdk.NestedStack {
         ...originProps.behavior,
         functionAssociations: [{
           function: new Function(this, this.name(`${originProps.id}-rewrite`), {
-            code: FunctionCode.fromInline(`function handler(event) { const request = event.request;request.uri = request.uri.replace(/^${path.replace(/\*$/, '').replaceAll('/', '\\/')}/, "/"); return request;}`),
+            code: FunctionCode.fromInline(`function handler(event) { const request = event.request;request.headers['x-s3-origin']={value:'${originProps.id}'};request.uri = request.uri.replace(/(\/[-a-zA-Z0-9._]*)*${path.replace(/\*$/, '').replaceAll('/', '\\/')}/, "/"); return request;}`),
             runtime: FunctionRuntime.JS_2_0,
           }),
           eventType: FunctionEventType.VIEWER_REQUEST,
@@ -286,9 +350,9 @@ export class Site extends cdk.NestedStack {
       bucket: webContentBucket,
       behavior: {
         //default values
-        cachePolicy: CachePolicy.CACHING_OPTIMIZED,
+        cachePolicy: this.cachePolicy,
         responseHeadersPolicy: ResponseHeadersPolicy.SECURITY_HEADERS,
-        viewerProtocolPolicy: cdk.aws_cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         ...originProps.behavior,
         origin: webContentOrigin,
 
@@ -304,4 +368,16 @@ export class Site extends cdk.NestedStack {
   regionName(resourceName: string) {
     return `${this.name(resourceName)}-${this.account}`.toLocaleLowerCase();
   }
+}
+
+const ensureObjectPrefixWildcard = (prefix: string) => {
+  //if prefix does not end with /, add one
+  if (!prefix.endsWith('/')) {
+    prefix += '/'
+  }
+  //if prefix does not end with a wildcard, add one
+  if (!prefix.endsWith('*')) {
+    prefix += '*'
+  }
+  return prefix;
 }
