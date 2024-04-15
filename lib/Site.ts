@@ -1,6 +1,6 @@
 import { CfnOutput, Duration, NestedStack, NestedStackProps, RemovalPolicy } from 'aws-cdk-lib';
 import { Certificate, CertificateValidation } from 'aws-cdk-lib/aws-certificatemanager';
-import { BehaviorOptions, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDistribution, Distribution, DistributionProps, Function, FunctionCode, FunctionEventType, FunctionRuntime, OriginAccessIdentity, PriceClass, ResponseHeadersPolicy, ViewerProtocolPolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { BehaviorOptions, CacheHeaderBehavior, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDistribution, Distribution, DistributionProps, Function, FunctionCode, FunctionEventType, FunctionRuntime, OriginAccessIdentity, PriceClass, ResponseHeadersPolicy, ViewerProtocolPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { HostedZone } from 'aws-cdk-lib/aws-route53';
@@ -71,6 +71,7 @@ export class Site extends NestedStack {
   // flag for development website to allow quick deletion of buckets
   readonly dev: boolean;
   readonly originAccessIdentity: OriginAccessIdentity;
+  cachePolicy: CachePolicy;
 
   constructor(scope: Construct, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
@@ -82,7 +83,15 @@ export class Site extends NestedStack {
     }
 
     this.dev = !!props.dev
-
+    this.cachePolicy = new CachePolicy(this, this.name('cachePolicy'), {
+      cachePolicyName: this.name('cachePolicy'),
+      defaultTtl: Duration.days(365),
+      maxTtl: Duration.days(365),
+      minTtl: Duration.days(365),
+      enableAcceptEncodingBrotli: true,
+      enableAcceptEncodingGzip: true,
+      headerBehavior: CacheHeaderBehavior.allowList('x-s3-origin')
+    });
     this.accessLogBucket = new Bucket(this, this.name('accessLog'), {
       bucketName: this.regionName(`site-accesslog`),
       ...contentBucketProps(this.dev),
@@ -95,6 +104,7 @@ export class Site extends NestedStack {
     this._grantLogAccess(accessLogParams.logBucket, accessLogParams.logFilePrefix);
     this.originAccessIdentity = props.originAccessIdentity ?? new OriginAccessIdentity(this, this.name('OAI'), {
       comment: this.siteName
+
     })
     const defaultBehaviorProps: OriginProps = { id: 'default' };
 
@@ -228,8 +238,8 @@ export class Site extends NestedStack {
 
     const webContentBucket = originProps.bucket ?? new Bucket(this, this.name(`webContent${isDefaultBehavior ? '' : '-' + originProps.id}-Bucket`), {
       ...contentBucketProps(this.dev),
-      websiteIndexDocument: 'index.html',
-      websiteErrorDocument: 'index.html',
+      //websiteIndexDocument: 'index.html',
+      //websiteErrorDocument: 'index.html',
       bucketName: isDefaultBehavior ? this.regionName(`webContent`) : this.regionName(`webContent-${originProps.id}`),
       serverAccessLogsBucket: this.accessLogBucket,
       serverAccessLogsPrefix
@@ -238,6 +248,7 @@ export class Site extends NestedStack {
     const webContentOrigin = originProps.bucket && originProps.behavior?.origin ? originProps.behavior.origin : new S3Origin(webContentBucket, {
       originAccessIdentity: this.originAccessIdentity
     });
+    webContentBucket.grantRead(this.originAccessIdentity);
     if (path) {
 
       //add a function to remove path when forwarding to Origin
@@ -245,7 +256,7 @@ export class Site extends NestedStack {
         ...originProps.behavior,
         functionAssociations: [{
           function: new Function(this, this.name(`${originProps.id}-rewrite`), {
-            code: FunctionCode.fromInline(`function handler(event) { const request = event.request;request.uri = request.uri.replace(/^${path.replace(/\*$/, '').replaceAll('/', '\\/')}/, "/"); return request;}`),
+            code: FunctionCode.fromInline(`function handler(event) { const request = event.request;request.headers['x-s3-origin']={value:'${originProps.id}'};request.uri = request.uri.replace(/^${path.replace(/\*$/, '').replaceAll('/', '\\/')}/, "/"); return request;}`),
             runtime: FunctionRuntime.JS_2_0,
           }),
           eventType: FunctionEventType.VIEWER_REQUEST,
@@ -260,7 +271,7 @@ export class Site extends NestedStack {
       bucket: webContentBucket,
       behavior: {
         //default values
-        cachePolicy: CachePolicy.CACHING_OPTIMIZED,
+        cachePolicy: this.cachePolicy,
         responseHeadersPolicy: ResponseHeadersPolicy.SECURITY_HEADERS,
         viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         ...originProps.behavior,
