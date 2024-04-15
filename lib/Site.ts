@@ -4,10 +4,10 @@ import { BehaviorOptions, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDis
 import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { HostedZone } from 'aws-cdk-lib/aws-route53';
-import { Bucket, BucketProps, CfnBucketPolicy, IBucket, ReplaceKey, StorageClass } from 'aws-cdk-lib/aws-s3';
+import { Bucket, BucketAccessControl, BucketProps, CfnBucketPolicy, IBucket, ObjectOwnership, ReplaceKey, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 
-export interface OptionalBehaviorOptions extends Partial<cdk.aws_cloudfront.BehaviorOptions> {
+export interface OptionalBehaviorOptions extends Partial<BehaviorOptions> {
   origin?: S3Origin
   cachePolicy?: CachePolicy
   responsePolicy?: ResponseHeadersPolicy
@@ -96,7 +96,9 @@ export class Site extends cdk.NestedStack {
 
     this.accessLogBucket = new Bucket(this, this.name('accessLog'), {
       bucketName: this.regionName(`site-accesslog`),
-      ...contentBucketProps(this.dev)
+      ...contentBucketProps(this.dev),
+      accessControl: BucketAccessControl.LOG_DELIVERY_WRITE,
+      objectOwnership: ObjectOwnership.OBJECT_WRITER,
     });
 
     const defaultBehaviorProps: OriginProps = { id: 'default' };
