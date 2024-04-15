@@ -144,7 +144,7 @@ export class Site extends NestedStack {
       },
       errorResponses: [
         {
-          httpStatus: 403,
+          httpStatus: 404,
           responseHttpStatus: 200,
           responsePagePath: '/index.html',
           ttl: Duration.minutes(1),
