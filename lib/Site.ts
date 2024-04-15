@@ -25,7 +25,24 @@ export interface OriginProps {
   behavior?: OptionalBehaviorOptions
 }
 
+const contentBucketProps = (dev?: boolean): Partial<BucketProps> => ({
+  ...(dev ? {
+    removalPolicy: cdk.RemovalPolicy.DESTROY,
+    autoDeleteObjects: true,
+  } : {
+    versioned: true,
+    lifecycleRules: [{
+      noncurrentVersionTransitions: [{
+        storageClass: StorageClass.GLACIER,
+        transitionAfter: cdk.Duration.days(90)
+      }]
+    }]
+  }),
+
+});
+
 export interface SiteProps extends cdk.NestedStackProps {
+  dev?: boolean,
   siteName: string | {
     id: string
     bucket?: Bucket
@@ -46,17 +63,6 @@ export interface SiteProps extends cdk.NestedStackProps {
 
 }
 
-const contentBucketProps: Partial<BucketProps> = {
-  removalPolicy: cdk.RemovalPolicy.DESTROY,
-  autoDeleteObjects: true,
-  versioned: true,
-  lifecycleRules: [{
-    noncurrentVersionTransitions: [{
-      storageClass: StorageClass.GLACIER,
-      transitionAfter: cdk.Duration.days(90)
-    }]
-  }]
-};
 
 const subcontentBucketProps: Partial<BucketProps> = {
   websiteIndexDocument: 'index.html',
@@ -74,6 +80,8 @@ const subcontentBucketProps: Partial<BucketProps> = {
 export class Site extends cdk.NestedStack {
   readonly siteName: string;
   readonly accessLogBucket: IBucket;
+  // flag for development website to allow quick deletion of buckets
+  readonly dev: boolean;
 
   constructor(scope: Construct, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
@@ -84,16 +92,11 @@ export class Site extends cdk.NestedStack {
       this.siteName = props.siteName.id;
     }
 
+    this.dev = !!props.dev
+
     this.accessLogBucket = new Bucket(this, this.name('accessLog'), {
       bucketName: this.regionName(`site-accesslog`),
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      objectOwnership: cdk.aws_s3.ObjectOwnership.OBJECT_WRITER,
-      lifecycleRules: [{
-        enabled: true,
-        expiration: cdk.Duration.days(90),
-        id: 'rule',
-      }]
+      ...contentBucketProps(this.dev)
     });
 
     const defaultBehaviorProps: OriginProps = { id: 'default' };
@@ -244,8 +247,10 @@ export class Site extends cdk.NestedStack {
     const originProps = typeof param === 'string' ? { id: param } : { ...param };
     const isDefaultBehavior = !path;
     const serverAccessLogsPrefix = `bucketAccesslogs/${this.siteName}/${isDefaultBehavior ? 'default' : originProps.id}/`;
+
+
     const webContentBucket = originProps.bucket ?? new Bucket(this, this.name(`webContent${isDefaultBehavior ? '' : '-' + originProps.id}-Bucket`), {
-      ...contentBucketProps,
+      ...contentBucketProps(this.dev),
       //if !skipId then add subcontentBucketProps
       ...(isDefaultBehavior ? {} : subcontentBucketProps),
       bucketName: isDefaultBehavior ? this.regionName(`webContent`) : this.regionName(`webContent-${originProps.id}`),
