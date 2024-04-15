@@ -57,6 +57,7 @@ export interface SiteProps extends NestedStackProps {
     // or a certificate ARN directly
     certificateArn?: string
   },
+  urlPrefix?: string,
   cloudFrontDistributionProps?: DistributionProps
   origins: {
     [path: string]: string | OriginProps
@@ -71,7 +72,8 @@ export class Site extends NestedStack {
   // flag for development website to allow quick deletion of buckets
   readonly dev: boolean;
   readonly originAccessIdentity: OriginAccessIdentity;
-  cachePolicy: CachePolicy;
+  readonly cachePolicy: CachePolicy;
+  readonly urlPrefix?: string;
 
   constructor(scope: Construct, props: SiteProps) {
     super(scope, `${props.siteName}-Site`, props);
@@ -139,18 +141,42 @@ export class Site extends NestedStack {
         distributionProps.certificate = Certificate.fromCertificateArn(this, this.name('certificate'), props.domain.certificateArn);
       }
     }
-
-    defaultOrigin.behavior = {
-      ...defaultOrigin.behavior,
-      functionAssociations: [{
-        function: new Function(this, this.name(`${defaultOrigin.id}-rewrite`), {
-          code: FunctionCode.fromInline(`function handler(event) { if(!event.request.uri.match(/^\\/(${pathPrefixes.join('|')})$/)) return event.request; return {statusCode: 301,headers: {location: {value: event.request.uri.replace(/^\\/(${pathPrefixes.join('|')})$/, "/$1/")}}}}`),
-          runtime: FunctionRuntime.JS_2_0,
-        }),
-        eventType: FunctionEventType.VIEWER_REQUEST,
-      },
-      ],
-    }
+    if (pathPrefixes.length > 0 || this.urlPrefix)
+      defaultOrigin.behavior = {
+        ...defaultOrigin.behavior,
+        functionAssociations: [{
+          function: new Function(this, this.name(`${defaultOrigin.id}-rewrite`), {
+            code:
+              this.urlPrefix ?
+                FunctionCode.fromInline(`function handler(event) {
+              let startsWithCorrectPrefix = /^\\/${this.urlPrefix}\\/(.*)/
+              if(!event.request.uri.match(startsWithCorrectPrefix)){
+                  return {statusCode: 301,headers: {location: {value: event.request.uri.replace(/^\\/(.*)/, "/${this.urlPrefix}/$1")}}};
+              }
+              let subsites = "${pathPrefixes.join('|')}";
+              if(subsites !==''){
+              let subsiteWithoutTrailingSlash = new RegExp("^\\/${this.urlPrefix}\\/("+subsites+")$");
+              if(event.request.uri.match(subsiteWithoutTrailingSlash)){
+                  return {statusCode: 301,headers: {location: {value: event.request.uri.replace(regexp, "/${this.urlPrefix}/$1/")}}};
+              }
+              }
+              return event.request;
+          }`) : FunctionCode.fromInline(`function handler(event) {
+            let subsites = "${pathPrefixes.join('|')}";
+            if(subsites !==''){
+            let subsiteWithoutTrailingSlash = new RegExp("^\\/("+subsites+")$");
+            if(event.request.uri.match(subsiteWithoutTrailingSlash)){
+                return {statusCode: 301,headers: {location: {value: event.request.uri.replace(regexp, "/$1/")}}};
+            }
+            }
+            return event.request;
+        }`),
+            runtime: FunctionRuntime.JS_2_0,
+          }),
+          eventType: FunctionEventType.VIEWER_REQUEST,
+        },
+        ],
+      }
 
     const distribution = new Distribution(this, this.name('CloudFront'), {
       defaultBehavior: defaultOrigin.behavior,
@@ -271,7 +297,7 @@ export class Site extends NestedStack {
         ...originProps.behavior,
         functionAssociations: [{
           function: new Function(this, this.name(`${originProps.id}-rewrite`), {
-            code: FunctionCode.fromInline(`function handler(event) { const request = event.request;request.headers['x-s3-origin']={value:'${originProps.id}'};request.uri = request.uri.replace(/^${path.replace(/\*$/, '').replaceAll('/', '\\/')}/, "/"); return request;}`),
+            code: FunctionCode.fromInline(`function handler(event) { const request = event.request;request.headers['x-s3-origin']={value:'${originProps.id}'};request.uri = request.uri.replace(/(\/[-a-zA-Z0-9._]*)*${path.replace(/\*$/, '').replaceAll('/', '\\/')}/, "/"); return request;}`),
             runtime: FunctionRuntime.JS_2_0,
           }),
           eventType: FunctionEventType.VIEWER_REQUEST,
