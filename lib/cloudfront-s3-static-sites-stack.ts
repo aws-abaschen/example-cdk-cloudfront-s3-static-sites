@@ -23,7 +23,9 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
         '/sub-site/*': 'subsite'
       },
       dev: this.deploymentEnv === 'dev',
-      urlPrefix: 'test'
+      urlPrefix: 'test',
+      disableCache: true,
+      originAccessControl: true
 
     });
 
