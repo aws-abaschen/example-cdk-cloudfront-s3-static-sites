@@ -78,7 +78,9 @@ export class Site extends NestedStack {
   readonly originAccessControlId: string | undefined
   readonly cachePolicy: ICachePolicy;
   readonly urlPrefix?: string;
-  readonly s3originRedirectForSPA: aws_cloudfront.experimental.EdgeFunction
+  readonly s3originResponseSPA: aws_cloudfront.experimental.EdgeFunction
+  readonly s3originRequestSPA: aws_cloudfront.experimental.EdgeFunction
+
   readonly cloudFrontDistribution: Distribution;
   readonly defaultS3OriginBucket: IBucket;
   readonly s3OriginBuckets: { [key: string]: IBucket }
@@ -134,27 +136,18 @@ export class Site extends NestedStack {
       })
     }
     const defaultBehaviorProps: OriginProps = { id: 'default' };
-    const executionRole = new Role(this, this.name('executionRole'), {
-      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
-      managedPolicies: [
-        ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
-    });
-
 
     new LogGroup(this, this.name('lg-request'), {
       logGroupName: '/aws/lambda/' + this.name('s3originRedirectForSPA'),
+      removalPolicy: props.dev ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN,
     })
-    this.s3originRedirectForSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('rn-redirect'), {
+    this.s3originRequestSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('rn-request'), {
       runtime: Runtime.NODEJS_LATEST,
       handler: 'index.handler',
       functionName: this.name('s3originRedirectForSPA'),
-      role: executionRole,
       code: Code.fromAsset('./lib/spa-request-origin')
     });
-    
-    //executionRole.grantAssumeRole(new ServicePrincipal('edgelambda.amazonaws.com'))
-    executionRole.addToPolicy(new PolicyStatement({
+    this.s3originRequestSPA.addToRolePolicy(new PolicyStatement({
       effect: Effect.ALLOW,
       actions: [
         'lambda:GetFunction',
@@ -164,17 +157,25 @@ export class Site extends NestedStack {
       resources: ['*'],
     }))
 
-    
     new LogGroup(this, this.name('lg-response'), {
       logGroupName: '/aws/lambda/' + this.name('origin-response'),
+      removalPolicy: props.dev ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN,
     })
-    this.s3originRedirectForSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('fn-response'), {
+    this.s3originResponseSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('fn-response'), {
       runtime: Runtime.NODEJS_LATEST,
       handler: 'index.handler',
       functionName: this.name('origin-response'),
-      role: executionRole,
       code: Code.fromAsset('./lib/spa-response-origin')
     });
+    this.s3originResponseSPA.addToRolePolicy(new PolicyStatement({
+      effect: Effect.ALLOW,
+      actions: [
+        'lambda:GetFunction',
+        'lambda:EnableReplication*',
+        'lambda:DisableReplication*',
+      ],
+      resources: ['*'],
+    }))
 
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
     const additionalBehaviors: { [path: string]: BehaviorOptions } = {};
@@ -220,7 +221,7 @@ export class Site extends NestedStack {
         edgeLambdas: [
           {
             eventType: LambdaEdgeEventType.ORIGIN_REQUEST,
-            functionVersion: this.s3originRedirectForSPA.currentVersion
+            functionVersion: this.s3originRequestSPA.currentVersion
           }
         ],
         functionAssociations: [{
@@ -388,7 +389,7 @@ export class Site extends NestedStack {
       ...originProps.behavior,
       edgeLambdas: [{
         eventType: aws_cloudfront.LambdaEdgeEventType.ORIGIN_REQUEST,
-        functionVersion: this.s3originRedirectForSPA.currentVersion
+        functionVersion: this.s3originRequestSPA.currentVersion
       }]
     }
 

@@ -18,7 +18,7 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
     this.deploymentEnv = props?.deploymentEnv ?? 'dev';
 
     const site = new Site(this, {
-      siteName: `VueJS-${this.deploymentEnv}`,
+      siteName: `abc-${this.deploymentEnv}`,
       origins:
       {
         '/site-a/*': 'sitea',
