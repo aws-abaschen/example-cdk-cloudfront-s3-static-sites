@@ -142,10 +142,10 @@ export class Site extends NestedStack {
     });
 
 
-    new LogGroup(this, 's3originRedirectForSPALogGroup', {
+    new LogGroup(this, this.name('lg-request'), {
       logGroupName: '/aws/lambda/' + this.name('s3originRedirectForSPA'),
     })
-    this.s3originRedirectForSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('redirect'), {
+    this.s3originRedirectForSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('rn-redirect'), {
       runtime: Runtime.NODEJS_LATEST,
       handler: 'index.handler',
       functionName: this.name('s3originRedirectForSPA'),
@@ -163,6 +163,18 @@ export class Site extends NestedStack {
       ],
       resources: ['*'],
     }))
+
+    
+    new LogGroup(this, this.name('lg-response'), {
+      logGroupName: '/aws/lambda/' + this.name('origin-response'),
+    })
+    this.s3originRedirectForSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('fn-response'), {
+      runtime: Runtime.NODEJS_LATEST,
+      handler: 'index.handler',
+      functionName: this.name('origin-response'),
+      role: executionRole,
+      code: Code.fromAsset('./lib/spa-response-origin')
+    });
 
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
     const additionalBehaviors: { [path: string]: BehaviorOptions } = {};
