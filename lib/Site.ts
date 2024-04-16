@@ -1,10 +1,8 @@
-import { CfnOutput, Duration, Fn, NestedStack, NestedStackProps, RemovalPolicy, aws_cloudfront } from 'aws-cdk-lib';
+import { CfnOutput, Duration, NestedStack, NestedStackProps, RemovalPolicy, aws_cloudfront } from 'aws-cdk-lib';
 import { Certificate, CertificateValidation } from 'aws-cdk-lib/aws-certificatemanager';
-import { BehaviorOptions, CacheHeaderBehavior, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, Function, FunctionCode, FunctionEventType, FunctionRuntime, ICachePolicy, LambdaEdgeEventType, OriginAccessIdentity, PriceClass, ResponseHeadersPolicy, ViewerProtocolPolicy } from 'aws-cdk-lib/aws-cloudfront';
+import { BehaviorOptions, CacheHeaderBehavior, CachePolicy, CfnCloudFrontOriginAccessIdentity, CfnDistribution, CfnOriginAccessControl, Distribution, DistributionProps, Function, FunctionCode, FunctionEventType, FunctionRuntime, ICachePolicy, OriginAccessIdentity, PriceClass, ResponseHeadersPolicy, ViewerProtocolPolicy } from 'aws-cdk-lib/aws-cloudfront';
 import { S3Origin } from 'aws-cdk-lib/aws-cloudfront-origins';
-import { Effect, ManagedPolicy, PolicyStatement, Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
-import { Code, Runtime } from 'aws-cdk-lib/aws-lambda';
-import { LogGroup } from 'aws-cdk-lib/aws-logs';
+import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { HostedZone } from 'aws-cdk-lib/aws-route53';
 import { Bucket, BucketProps, IBucket, ObjectOwnership, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
@@ -96,8 +94,7 @@ export class Site extends NestedStack {
 
     this.dev = !!props.dev
     this.urlPrefix = props.urlPrefix;
-    this.cachePolicy = props.disableCache ? CachePolicy.CACHING_DISABLED : new CachePolicy(this, this.name('cachePolicy'), {
-      cachePolicyName: this.name('cachePolicy'),
+    this.cachePolicy = props.disableCache ? CachePolicy.CACHING_DISABLED : new CachePolicy(this, 'cachePolicy', {
       defaultTtl: Duration.days(365),
       maxTtl: Duration.days(365),
       minTtl: Duration.days(365),
@@ -105,10 +102,13 @@ export class Site extends NestedStack {
       enableAcceptEncodingGzip: true,
       headerBehavior: CacheHeaderBehavior.allowList('x-s3-origin')
     });
-    this.accessLogBucket = new Bucket(this, this.name('accessLog'), {
-      bucketName: this.regionName(`site-accesslog`),
+    this.accessLogBucket = new Bucket(this, 'accessLog', {
       ...contentBucketProps(this.dev),
       objectOwnership: ObjectOwnership.OBJECT_WRITER,
+    });
+    new CfnOutput(this, `Bucket-AccessLog-Output`, {
+      value: this.accessLogBucket.bucketArn,
+      description: `AccessLog bucket for ${this.siteName} distribution and S3 Buckets`,
     });
     const accessLogParams = {
       logBucket: this.accessLogBucket,
@@ -116,9 +116,9 @@ export class Site extends NestedStack {
     }
     this._grantLogAccess(accessLogParams.logBucket, accessLogParams.logFilePrefix);
     if (props.originAccessControl) {
-      const originAccessControl = new CfnOriginAccessControl(this, this.name('S3AccessControl'), {
+      const originAccessControl = new CfnOriginAccessControl(this, 'S3AccessControl', {
         originAccessControlConfig: {
-          name: this.name('S3AccessControl'),
+          name: `${this.siteName}-${props.dev ? 'dev' : 'prod'}-OAC`,
           originAccessControlOriginType: 's3',
           signingBehavior: 'always',
           signingProtocol: 'sigv4',
@@ -130,52 +130,13 @@ export class Site extends NestedStack {
       this.originAccessControlId = originAccessControl.attrId;
       this.originAccessIdentity = undefined
     } else {
-      this.originAccessIdentity = new OriginAccessIdentity(this, this.name('OAI'), {
+      this.originAccessIdentity = new OriginAccessIdentity(this, 'OAI', {
         comment: this.siteName
 
       })
     }
     const defaultBehaviorProps: OriginProps = { id: 'default' };
 
-    new LogGroup(this, this.name('lg-request'), {
-      logGroupName: '/aws/lambda/' + this.name('s3originRedirectForSPA'),
-      removalPolicy: props.dev ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN,
-    })
-    this.s3originRequestSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('rn-request'), {
-      runtime: Runtime.NODEJS_LATEST,
-      handler: 'index.handler',
-      functionName: this.name('s3originRedirectForSPA'),
-      code: Code.fromAsset('./lib/spa-request-origin')
-    });
-    this.s3originRequestSPA.addToRolePolicy(new PolicyStatement({
-      effect: Effect.ALLOW,
-      actions: [
-        'lambda:GetFunction',
-        'lambda:EnableReplication*',
-        'lambda:DisableReplication*',
-      ],
-      resources: ['*'],
-    }))
-
-    new LogGroup(this, this.name('lg-response'), {
-      logGroupName: '/aws/lambda/' + this.name('origin-response'),
-      removalPolicy: props.dev ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN,
-    })
-    this.s3originResponseSPA = new aws_cloudfront.experimental.EdgeFunction(this, this.name('fn-response'), {
-      runtime: Runtime.NODEJS_LATEST,
-      handler: 'index.handler',
-      functionName: this.name('origin-response'),
-      code: Code.fromAsset('./lib/spa-response-origin')
-    });
-    this.s3originResponseSPA.addToRolePolicy(new PolicyStatement({
-      effect: Effect.ALLOW,
-      actions: [
-        'lambda:GetFunction',
-        'lambda:EnableReplication*',
-        'lambda:DisableReplication*',
-      ],
-      resources: ['*'],
-    }))
 
     const distributionOriginsOutput: { [path: string]: DistributionOrigin } = {};
     const additionalBehaviors: { [path: string]: BehaviorOptions } = {};
@@ -196,12 +157,49 @@ export class Site extends NestedStack {
       //only retrieve what's inside the /xxxxxx/ = xxxxxx
       pathPrefixes.push(path.split('/')[1]);
     }
+    defaultOrigin.behavior = {
+      ...defaultOrigin.behavior,
+      functionAssociations: [
+        {
+          function: new Function(this, `fn-rewrite-default`, {
+            code:
+              FunctionCode.fromInline(`
+                let subsiteRegexp = /^\\/(${pathPrefixes.join('|')})\\/(?:[^\\/]+\\/)*([^\\/]*)(\\.\\w{1,5})?$/;
+                function handler(event) {
+                    console.log(event);
+                    const groups = event.request.uri.match(subsiteRegexp);
+                    if (!groups) {
+                        return event.request;
+                    }
+                    const originTarget = groups[1];
+                    const resourceUri = groups[2] || '';
+  
+                    if (groups[0].match(/^\\/(${pathPrefixes.join('|')})$/)) {
+                      return { statusCode: 301, headers: { location: { value: event.request.uri + '/' } } };
+                    }
+
+                    if (!resourceUri.match(/.*\\.\\w{1,5}/)) { //doesn't route to asset
+                        event.request.uri = '/index.html';
+                        return event.request;
+                    }
+                    event.request.uri = groups[0].replace(/^\\/(${pathPrefixes.join('|')})/, '')
+  
+                    return event.request;
+                }`),
+            runtime: FunctionRuntime.JS_2_0,
+          }),
+          eventType: FunctionEventType.VIEWER_REQUEST,
+        }
+
+      ]
+    }
+
     const distributionProps = { ...props.cloudFrontDistributionProps };
     if (props.domain) {
       distributionProps.domainNames = [props.domain.domainName, ...props.domain.altNames];
       if (props.domain.hostedZoneId) {
-        const hostedZone = HostedZone.fromHostedZoneId(this, this.name('hostedZone'), props.domain.hostedZoneId)
-        distributionProps.certificate = new Certificate(this, this.name('certificate'), {
+        const hostedZone = HostedZone.fromHostedZoneId(this, 'hostedZone', props.domain.hostedZoneId)
+        distributionProps.certificate = new Certificate(this, 'distribution-certificate', {
           domainName: props.domain.domainName,
           subjectAlternativeNames: [props.domain.domainName, ...props.domain.altNames],
           validation: CertificateValidation.fromDns(hostedZone)
@@ -210,42 +208,11 @@ export class Site extends NestedStack {
         if (!props.domain.certificateArn) {
           throw new Error('Either a hostedZoneId or a certificateArn must be provided in the domain definition')
         }
-        distributionProps.certificate = Certificate.fromCertificateArn(this, this.name('certificate'), props.domain.certificateArn);
+        distributionProps.certificate = Certificate.fromCertificateArn(this, 'distribution-certificate', props.domain.certificateArn);
       }
     }
 
-    if (pathPrefixes.length > 0 || this.urlPrefix) {
-
-      defaultOrigin.behavior = {
-        ...defaultOrigin.behavior,
-        edgeLambdas: [
-          {
-            eventType: LambdaEdgeEventType.ORIGIN_REQUEST,
-            functionVersion: this.s3originRequestSPA.currentVersion
-          }
-        ],
-        functionAssociations: [{
-          function: new Function(this, this.name(`${defaultOrigin.id}-rewrite`), {
-            functionName: 'appendTrailingSlash',
-            code:
-              FunctionCode.fromInline(`function handler(event) {
-                    console.log(event);
-                    let subsites = "${pathPrefixes.join('|')}";
-                    if(subsites !==''){
-                    let subsiteWithoutTrailingSlash = new RegExp("^\\/("+subsites+")$");
-                    if(event.request.uri.match(subsiteWithoutTrailingSlash)){
-                        return {statusCode: 301,headers: {location: {value: event.request.uri.replace(subsiteWithoutTrailingSlash, "/$1/")}}};
-                    }
-                    }
-                    return event.request;
-                }`),
-            runtime: FunctionRuntime.JS_2_0,
-          }),
-          eventType: FunctionEventType.VIEWER_REQUEST,
-        }]
-      }
-    }
-    this.cloudFrontDistribution = new Distribution(this, this.name('CloudFront'), {
+    this.cloudFrontDistribution = new Distribution(this, 'distribution', {
       defaultBehavior: defaultOrigin.behavior,
       additionalBehaviors: {
         ...additionalBehaviors,
@@ -325,10 +292,9 @@ export class Site extends NestedStack {
       }
     }));
 
-    new CfnOutput(this, this.name('CloudFrontURL-Output'), {
+    new CfnOutput(this, 'CloudFrontURL-Output', {
       value: this.cloudFrontDistribution.domainName,
       description: `${this.siteName} CloudFront URL`,
-      exportName: this.name('CloudFrontURL')
     });
 
   }
@@ -348,53 +314,39 @@ export class Site extends NestedStack {
   _createBehavior(param: string | OriginProps, path?: string): DistributionOrigin {
     const originProps = typeof param === 'string' ? { id: param } : { ...param };
     const isDefaultBehavior = !path;
-    const serverAccessLogsPrefix = `bucketAccesslogs/${this.siteName}/${isDefaultBehavior ? 'default' : originProps.id}/`;
+    const originId = isDefaultBehavior ? 'default' : originProps.id;
+    const serverAccessLogsPrefix = `bucket/${originId}/`;
 
 
-    const webContentBucket = originProps.bucket ?? new Bucket(this, this.name(`webContent${isDefaultBehavior ? '' : '-' + originProps.id}-Bucket`), {
+    const webContentBucket = originProps.bucket ?? new Bucket(this, `webContent${originId}-Bucket`, {
       ...contentBucketProps(this.dev),
       //websiteIndexDocument: 'index.html',
       //websiteErrorDocument: 'index.html',
-      bucketName: isDefaultBehavior ? this.regionName(`webContent`) : this.regionName(`webContent-${originProps.id}`),
       serverAccessLogsBucket: this.accessLogBucket,
       serverAccessLogsPrefix
     });
-    new CfnOutput(this, this.name(`Bucket-${originProps.id}-Output`), {
+    new CfnOutput(this, `Bucket-${originId}-Output`, {
       value: webContentBucket.bucketArn,
-      description: `${this.name(`${originProps.id}-arn`)} Site bucket`,
-      exportName: this.name(`${originProps.id}-arn`)
+      description: `${originId} Site bucket`,
     });
     //this._grantLogAccess(webContentBucket, serverAccessLogsPrefix);
     const webContentOrigin = originProps.bucket && originProps.behavior?.origin ? originProps.behavior.origin : new S3Origin(webContentBucket, {
       ...(this.originAccessIdentity
         ? {
-          originAccessIdentity: this.originAccessIdentity
+          originAccessIdentity: this.originAccessIdentity,
+          originId
         }
         : {
           originAccessIdentity: undefined,
-          originId: this.name(`orig-${originProps.id}`)
+          originId
         })
     });
+
     if (this.originAccessIdentity)
       webContentBucket.grantRead(this.originAccessIdentity);
-    //only accepts one level
-    //TODO add multiple levels
-    const root = this.urlPrefix ? this.urlPrefix.replace(/\/?([a-zA-Z0-9-]+)\/?/, '$1') : '';
-    const normalizedPath = path ? path.replace(/\/?([a-zA-Z0-9-]+)\/?\*?/, '$1') : '';
-    const fullPrefix = root + normalizedPath;
-    console.log(fullPrefix);
 
-    //add a function to remove path when forwarding to Origin
-    originProps.behavior = {
-      ...originProps.behavior,
-      edgeLambdas: [{
-        eventType: aws_cloudfront.LambdaEdgeEventType.ORIGIN_REQUEST,
-        functionVersion: this.s3originRequestSPA.currentVersion
-      }]
-    }
-
-    return {
-      id: originProps.id,
+    const originResult = {
+      id: originId,
       bucket: webContentBucket,
       behavior: {
         //default values
@@ -403,18 +355,57 @@ export class Site extends NestedStack {
         viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         ...originProps.behavior,
         origin: webContentOrigin,
-
-
       }
     };
-  }
 
-  name(resourceName: string) {
-    return `${this.siteName}-${resourceName}`.toLocaleLowerCase();
+    if (!isDefaultBehavior) {
+      const originPathClean = path.substring(1, path.length - 2).replaceAll('/', '\\/')
+      return {
+        ...originResult,
+        behavior: {
+          ...originResult.behavior,
+          functionAssociations: [
+            {
+              function: new Function(this, `fn-rewrite-${originPathClean.replaceAll('/', '-')}`, {
+                code:
+                  FunctionCode.fromInline(`
+                let subsiteRegexp = /^\\/(${originPathClean})\\/(?:[^\\/]+\\/)*([^\\/]*)(\\.\\w{1,5})?$/;
+                function handler(event) {
+                    console.log(event);
+                    const groups = event.request.uri.match(subsiteRegexp);
+                    if (!groups) {
+                        return event.request;
+                    }
+                    const originTarget = groups[1];
+                    const resourceUri = groups[2] || '';
+  
+                    if (groups[0].match(/^\\/(${originPathClean})$/)) {
+                      return { statusCode: 301, headers: { location: { value: event.request.uri + '/' } } };
+                    }
+
+                    if (!resourceUri.match(/.*\\.\\w{1,5}/)) { //doesn't route to asset
+                        event.request.uri = '/index.html';
+                        return event.request;
+                    }
+                    event.request.uri = groups[0].replace(/^\\/(${originPathClean})/, '')
+  
+                    return event.request;
+                }`),
+                runtime: FunctionRuntime.JS_2_0,
+              }),
+              eventType: FunctionEventType.VIEWER_REQUEST,
+            }
+
+          ]
+        }
+      }
+    }
+
+    return originResult;
   }
 
   regionName(resourceName: string) {
-    return `${this.name(resourceName)}-${this.account}`.toLocaleLowerCase();
+    return `${resourceName}-${this.account}`.toLocaleLowerCase();
   }
 }
 

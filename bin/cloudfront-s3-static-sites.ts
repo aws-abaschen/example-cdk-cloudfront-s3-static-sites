@@ -7,9 +7,9 @@ const app = new cdk.App();
 // const common = new CommonStack(app, 'CommonResources', {
 //   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 // })
-new CloudfrontS3StaticSitesStack(app, 'MySites', {
-  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-  project: 'mysite',
+new CloudfrontS3StaticSitesStack(app, 'MultiOrigin', {
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: 'us-east-1' },
+  project: 'www',
 
   
 });

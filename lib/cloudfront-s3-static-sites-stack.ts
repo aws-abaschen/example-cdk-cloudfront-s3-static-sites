@@ -28,6 +28,17 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
       disableCache: true,
       originAccessControl: true
     });
+    const siteB = new Site(this, {
+      siteName: `def-${this.deploymentEnv}`,
+      origins:
+      {
+        '/site-a/*': 'sitea',
+        '/site-b/*': 'siteb',
+      },
+      dev: this.deploymentEnv === 'dev',
+      disableCache: true,
+      originAccessControl: true
+    });
 
     new BucketDeployment(this, 'default-deploy', {
       sources: [Source.asset('websites/default')],
