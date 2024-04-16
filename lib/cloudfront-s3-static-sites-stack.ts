@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Site } from './Site';
+import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
 
 export interface CloudfrontS3StaticSitesStackProps extends cdk.StackProps {
   deploymentEnv?: string;
@@ -20,15 +21,28 @@ export class CloudfrontS3StaticSitesStack extends cdk.Stack {
       siteName: `VueJS-${this.deploymentEnv}`,
       origins:
       {
-        '/sub-site/*': 'subsite'
+        '/site-a/*': 'sitea',
+        '/site-b/*': 'siteb',
       },
       dev: this.deploymentEnv === 'dev',
-      urlPrefix: 'test',
       disableCache: true,
       originAccessControl: true
-
     });
 
+    new BucketDeployment(this, 'default-deploy', {
+      sources: [Source.asset('websites/default')],
+      destinationBucket: site.defaultS3OriginBucket,
+    })
+
+    new BucketDeployment(this, 'site-a-deploy', {
+      sources: [Source.asset('websites/site-a')],
+      destinationBucket: site.s3OriginBuckets.sitea,
+    })
+
+    new BucketDeployment(this, 'site-b-deploy', {
+      sources: [Source.asset('websites/site-b')],
+      destinationBucket: site.s3OriginBuckets.siteb,
+    })
 
 
 
